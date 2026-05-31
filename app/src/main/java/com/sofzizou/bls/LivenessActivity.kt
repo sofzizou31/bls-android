@@ -67,6 +67,58 @@ class LivenessActivity : AppCompatActivity() {
         webView.addJavascriptInterface(AndroidBridge(), "Android")
 
         webView.webViewClient = object : WebViewClient() {
+
+            // ── Intercepte TOUTES les requêtes OzForensics → injecte headers ──
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                val url = request.url.toString()
+                if (!url.contains("ozforensics.com")) return null
+
+                val ip = livenessData?.ip       ?: return null
+                val ua = livenessData?.userAgent ?: return null
+                if (ip == "N/A" && ua == "N/A") return null
+
+                return try {
+                    val reqBuilder = okhttp3.Request.Builder().url(url)
+
+                    // Copier les headers d'origine sauf User-Agent
+                    request.requestHeaders.forEach { (k, v) ->
+                        if (!k.equals("User-Agent", ignoreCase = true)) {
+                            try { reqBuilder.header(k, v) } catch (_: Exception) {}
+                        }
+                    }
+
+                    // Injecter User-Agent Windows Chrome
+                    if (ua != "N/A") reqBuilder.header("User-Agent", ua)
+
+                    // Injecter IP réelle du client
+                    if (ip != "N/A") {
+                        reqBuilder.header("X-Forwarded-For", ip)
+                        reqBuilder.header("X-Real-IP",       ip)
+                    }
+
+                    val resp        = github.httpClient().newCall(reqBuilder.build()).execute()
+                    val contentType = resp.header("Content-Type") ?: "application/octet-stream"
+                    val mime        = contentType.split(";").first().trim()
+                    val encoding    = if (contentType.contains("charset="))
+                                         contentType.substringAfter("charset=").trim() else "UTF-8"
+
+                    // Convertir les headers de réponse en Map<String,String>
+                    val respHeaders = mutableMapOf<String, String>()
+                    resp.headers.forEach { (k, v) -> respHeaders[k] = v }
+
+                    WebResourceResponse(
+                        mime, encoding, resp.code, resp.message.ifEmpty { "OK" },
+                        respHeaders, resp.body?.byteStream()
+                    )
+                } catch (e: Exception) {
+                    Log.e("OzIntercept", "Erreur intercept $url : ${e.message}")
+                    null
+                }
+            }
+
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
                 Log.e("WebView", "Error ${err.errorCode}: ${err.description} @ ${req.url}")
             }

@@ -16,8 +16,11 @@ class GitHubClient {
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    /** Exposé pour LivenessActivity (intercept OzForensics requests) */
+    fun httpClient() = http
 
     // ── Modèle de données ────────────────────────────────────────────────────
 
