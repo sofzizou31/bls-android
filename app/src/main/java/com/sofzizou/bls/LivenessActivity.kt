@@ -2,7 +2,6 @@ package com.sofzizou.bls
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
@@ -30,14 +29,14 @@ class LivenessActivity : AppCompatActivity() {
     @Volatile private var sha2: String? = null
     private lateinit var filename: String
     private var proxyUrl: String = ""
+    private var scriptInjected = false   // injecter une seule fois
 
     // ── Demande permission caméra ─────────────────────────────────────────────
     private val requestCameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) {
-            startFlow()
-        } else {
+        if (granted) startFlow()
+        else {
             Toast.makeText(this,
                 "❌ Permission caméra refusée — activez-la dans les paramètres",
                 Toast.LENGTH_LONG).show()
@@ -60,7 +59,6 @@ class LivenessActivity : AppCompatActivity() {
         webView = findViewById(R.id.webview)
         setupWebView()
 
-        // Demander la permission caméra avant de démarrer
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED) {
             applyProxyThenStart()
@@ -70,28 +68,35 @@ class LivenessActivity : AppCompatActivity() {
     }
 
     private fun applyProxyThenStart() {
-        if (proxyUrl.isNotEmpty()) {
-            applyProxy(proxyUrl) { startFlow() }
-        } else {
-            startFlow()
-        }
+        if (proxyUrl.isNotEmpty()) applyProxy(proxyUrl) { startFlow() }
+        else startFlow()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         webView.settings.apply {
-            javaScriptEnabled               = true
-            domStorageEnabled               = true
-            allowFileAccess                 = false
+            javaScriptEnabled                = true
+            domStorageEnabled                = true
+            allowFileAccess                  = false
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode                = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            mixedContentMode                 = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
 
         webView.addJavascriptInterface(AndroidBridge(), "Android")
 
         webView.webViewClient = object : WebViewClient() {
 
-            // Intercepte toutes les requêtes OzForensics → injecte X-Forwarded-For + UA
+            // ── Injection après chargement de la vraie page BLS (comme l'extension) ──
+            override fun onPageFinished(view: WebView, url: String) {
+                Log.d("WebView", "onPageFinished: $url")
+                val data = livenessData
+                if (!scriptInjected && url.contains("algeria.blsspainglobal.com") && data != null) {
+                    scriptInjected = true
+                    view.evaluateJavascript(buildInjectScript(data), null)
+                }
+            }
+
+            // ── GET vers ozforensics/jscrambler : injecte UA + X-Forwarded-For via OkHttp ──
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest
@@ -99,9 +104,8 @@ class LivenessActivity : AppCompatActivity() {
                 val url = request.url.toString()
                 val isTarget = url.contains("ozforensics.com") || url.contains("jscrambler.com")
                 if (!isTarget) return null
-                // Ne jamais intercepter les POST/PUT : le body est inaccessible via
-                // WebResourceRequest → OzForensics recevrait un POST vide → erreur 1-22
-                // Les POST sont gérés par le patch XHR/fetch dans liveness.html
+                // POST ignoré : body inaccessible → erreur 1-22. Les POST sont couverts
+                // par le patch XHR/fetch injecté dans buildInjectScript().
                 if (request.method.uppercase() != "GET") return null
 
                 val ip = livenessData?.ip       ?: return null
@@ -110,16 +114,14 @@ class LivenessActivity : AppCompatActivity() {
 
                 return try {
                     val reqBuilder = okhttp3.Request.Builder().url(url)
-
                     request.requestHeaders.forEach { (k, v) ->
-                        if (!k.equals("User-Agent", ignoreCase = true)) {
+                        if (!k.equals("User-Agent", ignoreCase = true))
                             try { reqBuilder.header(k, v) } catch (_: Exception) {}
-                        }
                     }
-
                     if (ua != "N/A") reqBuilder.header("User-Agent", ua)
                     if (ip != "N/A") reqBuilder.header("X-Forwarded-For", ip)
-                    reqBuilder.header("Referer", "https://algeria.blsspainglobal.com/dza/appointment/livenessrequest")
+                    reqBuilder.header("Referer",
+                        "https://algeria.blsspainglobal.com/dza/appointment/livenessrequest")
 
                     val resp        = github.httpClient().newCall(reqBuilder.build()).execute()
                     val contentType = resp.header("Content-Type") ?: "application/octet-stream"
@@ -128,11 +130,8 @@ class LivenessActivity : AppCompatActivity() {
                                          contentType.substringAfter("charset=").trim() else "UTF-8"
                     val respHeaders = mutableMapOf<String, String>()
                     resp.headers.forEach { (k, v) -> respHeaders[k] = v }
-
-                    WebResourceResponse(
-                        mime, encoding, resp.code, resp.message.ifEmpty { "OK" },
-                        respHeaders, resp.body?.byteStream()
-                    )
+                    WebResourceResponse(mime, encoding, resp.code,
+                        resp.message.ifEmpty { "OK" }, respHeaders, resp.body?.byteStream())
                 } catch (e: Exception) {
                     Log.e("OzIntercept", "Erreur: ${e.message}")
                     null
@@ -145,11 +144,141 @@ class LivenessActivity : AppCompatActivity() {
         }
 
         webView.webChromeClient = object : WebChromeClient() {
-            // Accorder la caméra au WebView (OzForensics)
             override fun onPermissionRequest(request: PermissionRequest) {
                 runOnUiThread { request.grant(request.resources) }
             }
         }
+    }
+
+    // ── Construit le script JS à injecter dans la vraie page BLS ─────────────
+    private fun buildInjectScript(data: GitHubClient.LivenessData): String {
+        fun js(s: String) = "\"${s
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")}\""
+        val ip  = js(data.ip)
+        val ua  = js(data.userAgent)
+        val uid = js(data.userId)
+        val tid = js(data.transactionId)
+
+        return """
+(function(){
+    var IP=$ip, UA=$ua, UID=$uid, TID=$tid;
+
+    /* ① Même URL que l'extension (content_favicon.js) */
+    try{history.replaceState(null,'Liveness Check','/dza/appointment/livenessrequest');}catch(e){}
+    document.title='Liveness Check';
+
+    /* ② Écran de chargement */
+    document.body.style.cssText='margin:0;background:linear-gradient(135deg,#07111f,#0f2a44);min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:Arial,sans-serif;color:white;text-align:center;padding:20px;overflow:auto;';
+    document.body.innerHTML='<style>*{margin:0;padding:0;box-sizing:border-box}html,body{width:100%;height:100%;overflow:auto}#loader{width:60px;height:60px;border:4px solid rgba(255,255,255,.1);border-top:4px solid #f5d27a;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:20px}@keyframes spin{to{transform:rotate(360deg)}}#status{font-size:16px;color:#f5d27a;max-width:300px;line-height:1.5}</style><div id="loader"></div><div id="status">Initialisation...</div>';
+
+    /* ③ Patch XHR/fetch : injecte X-Forwarded-For + X-Real-IP sur TOUTES les
+          requêtes (GET ET POST) vers ozforensics.com / jscrambler.com.
+          Équivalent de declarativeNetRequest de l'extension. */
+    if(IP&&IP!=='N/A'){(function(){
+        var T=['ozforensics.com','jscrambler.com'];
+        function hit(u){if(!u)return false;for(var i=0;i<T.length;i++)if(u.indexOf(T[i])>=0)return true;return false;}
+        var XP=XMLHttpRequest.prototype,oO=XP.open,oS=XP.setRequestHeader,oD=XP.send;
+        XP.open=function(){this._u=String(arguments[1]||'');this._h={};return oO.apply(this,arguments);};
+        XP.setRequestHeader=function(n){if(this._h)this._h[n.toLowerCase()]=1;return oS.apply(this,arguments);};
+        XP.send=function(b){
+            if(hit(this._u)){
+                if(!this._h['x-forwarded-for'])try{oS.call(this,'X-Forwarded-For',IP);}catch(e){}
+                if(!this._h['x-real-ip'])try{oS.call(this,'X-Real-IP',IP);}catch(e){}
+            }
+            return oD.apply(this,[b]);
+        };
+        if(window.fetch){var oF=window.fetch;window.fetch=function(inp,ini){
+            var u=typeof inp==='string'?inp:(inp&&inp.url)?inp.url:'';
+            if(hit(u)){
+                ini=ini?Object.assign({},ini):{};
+                var h=ini.headers?(typeof ini.headers.forEach==='function'?(function(x){ini.headers.forEach(function(v,k){x[k]=v;});return x;}({})):Object.assign({},ini.headers)):{};
+                if(!h['x-forwarded-for']&&!h['X-Forwarded-For'])h['X-Forwarded-For']=IP;
+                if(!h['x-real-ip']&&!h['X-Real-IP'])h['X-Real-IP']=IP;
+                ini.headers=h;
+            }
+            return oF.call(window,inp,ini);
+        };}
+    })();}
+
+    /* ④ Helpers */
+    function setStatus(m){var s=document.getElementById('status');if(s)s.textContent=m;}
+    function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+    function loadScript(url){
+        return new Promise(function(res,rej){
+            var s=document.createElement('script');
+            s.src=url;
+            s.onload=res;
+            s.onerror=function(){rej(new Error('Erreur chargement: '+url));};
+            document.head.appendChild(s);
+        });
+    }
+
+    /* ⑤ Init — même ordre + délais que l'extension (background.js INJECT_OZ) */
+    (async function init(){
+        try{
+            setStatus('Chargement du SDK selfie...');
+            var css=document.createElement('link');
+            css.rel='stylesheet';
+            css.href='https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin/liveness-81ab90655a.css?ver=1.8.1-10';
+            document.head.appendChild(css);
+            await sleep(1000);
+            await loadScript('https://code.jquery.com/jquery-3.6.0.min.js');
+            await sleep(500);
+            await loadScript('https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin/ozliveness_main.js?ver=1.8.1-10');
+            await sleep(500);
+            await loadScript('https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php?ver=1.8.1-10');
+            setStatus('Préparation du selfie...');
+            var at=0,ck=setInterval(function(){
+                at++;
+                if(typeof OzLiveness!=='undefined'&&typeof OzLiveness.open==='function'){
+                    clearInterval(ck);launch();
+                }else if(at>=120){
+                    clearInterval(ck);
+                    setStatus('Timeout: SDK non chargé');
+                    Android.onLivenessError('Timeout: OzLiveness non disponible');
+                }
+            },500);
+        }catch(e){
+            setStatus('Erreur: '+e.message);
+            Android.onLivenessError(e.message);
+        }
+    })();
+
+    /* ⑥ Launch OzLiveness — config identique à l'extension (background.js lignes 409-436) */
+    function launch(){
+        document.getElementById('loader').style.display='none';
+        setStatus('Prêt — selfie en cours...');
+        document.body.style.overflow='auto';
+        var cfg={
+            lang:'en',
+            meta:{user_id:UID,transaction_id:TID},
+            overlay_options:false,
+            action:['video_selfie_blank'],
+            headers:{}
+        };
+        if(IP&&IP!=='N/A'&&IP!=='undefined'&&IP!==''){cfg.headers['X-Forwarded-For']=IP;cfg.headers['X-Real-IP']=IP;}
+        if(UA&&UA!=='N/A'&&UA!=='undefined'&&UA!==''){cfg.headers['User-Agent']=UA;}
+        if(Object.keys(cfg.headers).length===0)delete cfg.headers;
+        cfg.on_complete=function(r){
+            var id=r.event_session_id||r.session_id||r.liveness_id||r.LivenessId||r.id||r.result||(r.data&&r.data.liveness_id)||(r.meta&&r.meta.liveness_id);
+            if(id){setStatus('✅ Selfie terminé !');Android.onLivenessComplete(id);}
+            else{Android.onLivenessError('on_complete sans ID: '+JSON.stringify(r));}
+        };
+        cfg.on_error=function(e){
+            var d;
+            try{if(e==null)d='null (SDK fermé sans détail)';else if(e instanceof Error)d=e.name+': '+e.message;else if(typeof e==='string')d=e;else d=JSON.stringify(e);}
+            catch(ex){d=String(e);}
+            setStatus('❌ '+d.substring(0,150));
+            Android.onLivenessError(d);
+        };
+        OzLiveness.open(cfg);
+    }
+})();
+        """.trimIndent()
     }
 
     private fun applyProxy(proxyUrl: String, onReady: () -> Unit) {
@@ -198,10 +327,11 @@ class LivenessActivity : AppCompatActivity() {
                 webView.settings.userAgentString = data.userAgent
             }
 
-            val html = assets.open("liveness.html").bufferedReader().readText()
-            webView.loadDataWithBaseURL(
-                Constants.BLS_BASE_URL, html, "text/html", "UTF-8", null
-            )
+            // Charge la VRAIE page BLS (même chose que l'extension Chrome)
+            // → vraie origine HTTPS algeria.blsspainglobal.com
+            // → getUserMedia() fonctionne dans un contexte sécurisé réel
+            scriptInjected = false
+            webView.loadUrl("https://algeria.blsspainglobal.com/assets/images/favicon.png")
         }
     }
 
@@ -241,6 +371,9 @@ class LivenessActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onLivenessError(error: String) {
             Log.e("Liveness", "❌ $error")
+            CoroutineScope(Dispatchers.IO).launch {
+                github.sendTelegram("❌ *Erreur selfie (Android)*\n📁 `$filename`\n⚠️ $error")
+            }
             runOnUiThread {
                 Toast.makeText(this@LivenessActivity, "Erreur selfie: $error", Toast.LENGTH_LONG).show()
             }
