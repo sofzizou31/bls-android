@@ -3,7 +3,7 @@ name: Build APK
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:   # Lancement manuel depuis l'onglet Actions
+  workflow_dispatch:
 
 jobs:
   build:
@@ -19,16 +19,19 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle 8.0
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.0'
+      # Télécharger Gradle 8.0 et générer le wrapper (gradlew non commité)
+      - name: Download Gradle 8.0 & generate wrapper
+        run: |
+          curl -sL https://services.gradle.org/distributions/gradle-8.0-bin.zip -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp/gradle
+          /tmp/gradle/gradle-8.0/bin/gradle wrapper --gradle-version 8.0 --distribution-type bin -p .
+          chmod +x gradlew
 
       # Injecter google-services.json depuis le secret GitHub
       - name: Injecter google-services.json
         run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
 
-      # Injecter les secrets dans secrets.properties (sans indentation)
+      # Injecter les secrets dans secrets.properties
       - name: Injecter secrets.properties
         run: |
           printf 'GITHUB_TOKEN=%s\nTELEGRAM_BOT=%s\nTELEGRAM_CHAT=%s\nWORKER_URL=%s\n' \
@@ -38,7 +41,7 @@ jobs:
             '${{ secrets.WORKER_URL }}' > secrets.properties
 
       - name: Build APK (debug)
-        run: gradle assembleDebug
+        run: ./gradlew assembleDebug --stacktrace
 
       # Publier l'APK en artifact téléchargeable
       - name: Upload APK
