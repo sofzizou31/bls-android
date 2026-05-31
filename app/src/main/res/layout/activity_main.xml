@@ -23,13 +23,31 @@
         android:textStyle="bold"
         android:layout_marginBottom="4dp"/>
 
+    <!-- Statut en attente ou selfie disponible -->
     <TextView
+        android:id="@+id/tv_pending"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="En attente des notifications..."
-        android:textSize="14sp"
-        android:textColor="#888888"
-        android:layout_marginBottom="40dp"/>
+        android:text="📸 Selfie en attente !"
+        android:textSize="18sp"
+        android:textColor="#a6e3a1"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="16dp"
+        android:visibility="gone"/>
+
+    <!-- Bouton principal selfie (visible si notification reçue) -->
+    <Button
+        android:id="@+id/btn_start_selfie"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:text="▶ Démarrer le selfie"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:backgroundTint="#2da44e"
+        android:textColor="#ffffff"
+        android:layout_marginBottom="32dp"
+        android:visibility="gone"/>
 
     <TextView
         android:id="@+id/tv_phone"

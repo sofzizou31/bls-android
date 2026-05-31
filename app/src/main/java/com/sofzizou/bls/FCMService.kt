@@ -47,6 +47,12 @@ class FCMService : FirebaseMessagingService() {
         }
         val proxyUrl = message.data["proxy_url"] ?: ""
 
+        // ── Stocker le selfie en attente → visible même sans taper la notif ──
+        getSharedPreferences(Constants.PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(Constants.PREF_PENDING_FILENAME,  filename)
+            .putString(Constants.PREF_PENDING_PROXY_URL, proxyUrl)
+            .apply()
+
         createNotificationChannel()
 
         // Intent : ouvre LivenessActivity directement au tap

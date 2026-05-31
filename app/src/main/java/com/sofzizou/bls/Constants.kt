@@ -15,7 +15,6 @@ object Constants {
     val WORKER_URL: String    get() = BuildConfig.WORKER_URL
 
     // ── BLS / OzForensics ────────────────────────────────────────────────────
-    // Base URL injectée dans loadDataWithBaseURL pour tromper Jscrambler
     const val BLS_BASE_URL = "https://algeria.blsspainglobal.com/dza/appointment/livenessrequest"
 
     // ── Notifications ────────────────────────────────────────────────────────
@@ -27,6 +26,10 @@ object Constants {
     const val PREFS_NAME  = "bls_prefs"
     const val PREF_PHONE  = "registered_phone"
     const val PREF_TOKEN  = "fcm_token"
+
+    // ── Selfie en attente (stocké par FCMService) ────────────────────────────
+    const val PREF_PENDING_FILENAME  = "pending_filename"
+    const val PREF_PENDING_PROXY_URL = "pending_proxy_url"
 
     // ── Intent extras ────────────────────────────────────────────────────────
     const val EXTRA_FILENAME  = "filename"
