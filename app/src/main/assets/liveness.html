@@ -4,6 +4,85 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>BLS Liveness</title>
+
+    <!--
+        Patch XHR + fetch AVANT tout autre script.
+        Garantit X-Forwarded-For + X-Real-IP sur TOUTES les requêtes
+        (GET ET POST) vers ozforensics.com et jscrambler.com.
+        Équivalent de declarativeNetRequest de l'extension Chrome.
+        NE PAS ajouter Referer ici : header interdit → crash silencieux SDK.
+    -->
+    <script>
+    (function() {
+        var TARGETS = ['ozforensics.com', 'jscrambler.com'];
+        function hit(url) {
+            if (!url) return false;
+            for (var i = 0; i < TARGETS.length; i++)
+                if (url.indexOf(TARGETS[i]) !== -1) return true;
+            return false;
+        }
+        function ip() {
+            try { return (typeof Android !== 'undefined') ? Android.getIP() : 'N/A'; }
+            catch(e) { return 'N/A'; }
+        }
+
+        /* ── XMLHttpRequest ── */
+        var XHR      = XMLHttpRequest.prototype;
+        var origOpen = XHR.open;
+        var origSet  = XHR.setRequestHeader;
+        var origSend = XHR.send;
+        XHR.open = function() {
+            this._pUrl = String(arguments[1] || '');
+            this._pH   = {};
+            return origOpen.apply(this, arguments);
+        };
+        XHR.setRequestHeader = function(n) {
+            if (this._pH) this._pH[n.toLowerCase()] = 1;
+            return origSet.apply(this, arguments);
+        };
+        XHR.send = function(body) {
+            if (hit(this._pUrl)) {
+                var v = ip();
+                if (v && v !== 'N/A') {
+                    if (!this._pH['x-forwarded-for'])
+                        try { origSet.call(this, 'X-Forwarded-For', v); } catch(e) {}
+                    if (!this._pH['x-real-ip'])
+                        try { origSet.call(this, 'X-Real-IP', v); } catch(e) {}
+                }
+            }
+            return origSend.apply(this, [body]);
+        };
+
+        /* ── fetch ── */
+        if (window.fetch) {
+            var origFetch = window.fetch;
+            window.fetch = function(input, init) {
+                var url = typeof input === 'string' ? input
+                        : (input && input.url) ? input.url : '';
+                if (hit(url)) {
+                    var v = ip();
+                    if (v && v !== 'N/A') {
+                        init = init ? Object.assign({}, init) : {};
+                        var h = {};
+                        if (init.headers) {
+                            if (typeof init.headers.forEach === 'function')
+                                init.headers.forEach(function(val, key) { h[key] = val; });
+                            else
+                                h = Object.assign({}, init.headers);
+                        }
+                        if (!h['x-forwarded-for'] && !h['X-Forwarded-For'])
+                            h['X-Forwarded-For'] = v;
+                        if (!h['x-real-ip'] && !h['X-Real-IP'])
+                            h['X-Real-IP'] = v;
+                        init.headers = h;
+                    }
+                }
+                return origFetch.call(window, input, init);
+            };
+        }
+    })();
+    </script>
+
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
