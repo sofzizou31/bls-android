@@ -67,8 +67,9 @@ class FCMService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = message.notification?.title ?: "📸 BLS Visa — Selfie requis"
-        val body  = message.notification?.body  ?: "Ouvrez l'app pour effectuer votre selfie"
+        // Data-only message → titre/body dans message.data
+        val title = message.data["title"] ?: message.notification?.title ?: "📸 BLS Visa — Selfie requis"
+        val body  = message.data["body"]  ?: message.notification?.body  ?: "Ouvrez l'app pour effectuer votre selfie"
 
         val notif = NotificationCompat.Builder(this, Constants.NOTIF_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
