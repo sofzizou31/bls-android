@@ -96,7 +96,6 @@ class LivenessActivity : AppCompatActivity() {
                     // Injecter IP réelle du client
                     if (ip != "N/A") {
                         reqBuilder.header("X-Forwarded-For", ip)
-                        reqBuilder.header("X-Real-IP",       ip)
                     }
 
                     val resp        = github.httpClient().newCall(reqBuilder.build()).execute()
