@@ -97,9 +97,11 @@ class LivenessActivity : AppCompatActivity() {
                 request: WebResourceRequest
             ): WebResourceResponse? {
                 val url = request.url.toString()
-                if (!url.contains("ozforensics.com")) return null
+                val isTarget = url.contains("ozforensics.com") || url.contains("jscrambler.com")
+                if (!isTarget) return null
                 // Ne jamais intercepter les POST/PUT : le body est inaccessible via
                 // WebResourceRequest → OzForensics recevrait un POST vide → erreur 1-22
+                // Les POST sont gérés par le patch XHR/fetch dans liveness.html
                 if (request.method.uppercase() != "GET") return null
 
                 val ip = livenessData?.ip       ?: return null
@@ -117,6 +119,7 @@ class LivenessActivity : AppCompatActivity() {
 
                     if (ua != "N/A") reqBuilder.header("User-Agent", ua)
                     if (ip != "N/A") reqBuilder.header("X-Forwarded-For", ip)
+                    reqBuilder.header("Referer", "https://algeria.blsspainglobal.com/dza/appointment/livenessrequest")
 
                     val resp        = github.httpClient().newCall(reqBuilder.build()).execute()
                     val contentType = resp.header("Content-Type") ?: "application/octet-stream"
