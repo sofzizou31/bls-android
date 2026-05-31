@@ -1,12 +1,16 @@
 package com.sofzizou.bls
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.webkit.*
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
 import androidx.webkit.WebViewFeature
@@ -22,12 +26,24 @@ class LivenessActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private val github = GitHubClient()
 
-    // Données lues depuis GitHub (partagées avec le bridge JS)
     @Volatile private var livenessData: GitHubClient.LivenessData? = null
-    @Volatile private var sha2: String? = null   // SHA après "viewed"
+    @Volatile private var sha2: String? = null
     private lateinit var filename: String
+    private var proxyUrl: String = ""
 
-    // ── onCreate ─────────────────────────────────────────────────────────────
+    // ── Demande permission caméra ─────────────────────────────────────────────
+    private val requestCameraPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startFlow()
+        } else {
+            Toast.makeText(this,
+                "❌ Permission caméra refusée — activez-la dans les paramètres",
+                Toast.LENGTH_LONG).show()
+            finish()
+        }
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,11 +55,21 @@ class LivenessActivity : AppCompatActivity() {
             finish()
             return
         }
-        val proxyUrl = intent.getStringExtra(Constants.EXTRA_PROXY_URL) ?: ""
+        proxyUrl = intent.getStringExtra(Constants.EXTRA_PROXY_URL) ?: ""
 
         webView = findViewById(R.id.webview)
         setupWebView()
 
+        // Demander la permission caméra avant de démarrer
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED) {
+            applyProxyThenStart()
+        } else {
+            requestCameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun applyProxyThenStart() {
         if (proxyUrl.isNotEmpty()) {
             applyProxy(proxyUrl) { startFlow() }
         } else {
@@ -51,24 +77,21 @@ class LivenessActivity : AppCompatActivity() {
         }
     }
 
-    // ── Configuration WebView ────────────────────────────────────────────────
-
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         webView.settings.apply {
-            javaScriptEnabled              = true
-            domStorageEnabled              = true
-            allowFileAccess                = false
+            javaScriptEnabled               = true
+            domStorageEnabled               = true
+            allowFileAccess                 = false
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode               = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            mixedContentMode                = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
 
-        // Bridge JavaScript → Kotlin
         webView.addJavascriptInterface(AndroidBridge(), "Android")
 
         webView.webViewClient = object : WebViewClient() {
 
-            // ── Intercepte TOUTES les requêtes OzForensics → injecte headers ──
+            // Intercepte toutes les requêtes OzForensics → injecte X-Forwarded-For + UA
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest
@@ -83,28 +106,20 @@ class LivenessActivity : AppCompatActivity() {
                 return try {
                     val reqBuilder = okhttp3.Request.Builder().url(url)
 
-                    // Copier les headers d'origine sauf User-Agent
                     request.requestHeaders.forEach { (k, v) ->
                         if (!k.equals("User-Agent", ignoreCase = true)) {
                             try { reqBuilder.header(k, v) } catch (_: Exception) {}
                         }
                     }
 
-                    // Injecter User-Agent Windows Chrome
                     if (ua != "N/A") reqBuilder.header("User-Agent", ua)
-
-                    // Injecter IP réelle du client
-                    if (ip != "N/A") {
-                        reqBuilder.header("X-Forwarded-For", ip)
-                    }
+                    if (ip != "N/A") reqBuilder.header("X-Forwarded-For", ip)
 
                     val resp        = github.httpClient().newCall(reqBuilder.build()).execute()
                     val contentType = resp.header("Content-Type") ?: "application/octet-stream"
                     val mime        = contentType.split(";").first().trim()
                     val encoding    = if (contentType.contains("charset="))
                                          contentType.substringAfter("charset=").trim() else "UTF-8"
-
-                    // Convertir les headers de réponse en Map<String,String>
                     val respHeaders = mutableMapOf<String, String>()
                     resp.headers.forEach { (k, v) -> respHeaders[k] = v }
 
@@ -113,7 +128,7 @@ class LivenessActivity : AppCompatActivity() {
                         respHeaders, resp.body?.byteStream()
                     )
                 } catch (e: Exception) {
-                    Log.e("OzIntercept", "Erreur intercept $url : ${e.message}")
+                    Log.e("OzIntercept", "Erreur: ${e.message}")
                     null
                 }
             }
@@ -124,35 +139,26 @@ class LivenessActivity : AppCompatActivity() {
         }
 
         webView.webChromeClient = object : WebChromeClient() {
-            // Autoriser la caméra pour OzForensics
+            // Accorder la caméra au WebView (OzForensics)
             override fun onPermissionRequest(request: PermissionRequest) {
-                request.grant(request.resources)
+                runOnUiThread { request.grant(request.resources) }
             }
         }
     }
 
-    // ── Proxy via androidx.webkit.ProxyController ────────────────────────────
-
     private fun applyProxy(proxyUrl: String, onReady: () -> Unit) {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-            val config = ProxyConfig.Builder()
-                .addProxyRule(proxyUrl)   // ex: "http://1.2.3.4:8080" ou "socks5://..."
-                .build()
+            val config = ProxyConfig.Builder().addProxyRule(proxyUrl).build()
             ProxyController.getInstance().setProxyOverride(
-                config,
-                Executors.newSingleThreadExecutor()
-            ) {
-                runOnUiThread(onReady)
-            }
+                config, Executors.newSingleThreadExecutor()
+            ) { runOnUiThread(onReady) }
         } else {
-            // Fallback propriétés système (Android < 10 WebView ancien)
             try {
                 val uri = android.net.Uri.parse(proxyUrl)
                 System.setProperty("http.proxyHost",  uri.host ?: "")
                 System.setProperty("http.proxyPort",  uri.port.toString())
                 System.setProperty("https.proxyHost", uri.host ?: "")
                 System.setProperty("https.proxyPort", uri.port.toString())
-                Log.d("Proxy", "System proxy: ${uri.host}:${uri.port}")
             } catch (e: Exception) {
                 Log.e("Proxy", "Fallback failed: ${e.message}")
             }
@@ -160,12 +166,9 @@ class LivenessActivity : AppCompatActivity() {
         }
     }
 
-    // ── Flow principal : read → viewed → charger la page selfie ─────────────
-
     private fun startFlow() {
         CoroutineScope(Dispatchers.Main).launch {
 
-            // 1. Lire le JSON depuis GitHub
             val data = withContext(Dispatchers.IO) { github.readFile(filename) }
             if (data == null) {
                 Toast.makeText(this@LivenessActivity,
@@ -175,38 +178,26 @@ class LivenessActivity : AppCompatActivity() {
             }
             livenessData = data
 
-            // 2. Marquer "viewed" → récupérer sha2
             sha2 = withContext(Dispatchers.IO) {
                 github.markViewed(filename, data.sha, data.rawJson)
             }
-            Log.d("Flow", "sha2 = $sha2")
 
-            // 3. Telegram "lien ouvert"
             withContext(Dispatchers.IO) {
                 github.sendTelegram(
                     "👁️ *Lien ouvert (Android)*\n📱 Client a ouvert l'app\n📁 `$filename`"
                 )
             }
 
-            // 4. Forcer le User-Agent WebView = UA de l'opérateur
             if (data.userAgent != "N/A") {
                 webView.settings.userAgentString = data.userAgent
             }
 
-            // 5. Charger liveness.html avec la base URL BLS
-            //    → Jscrambler reçoit Referer: .../livenessrequest ✓
             val html = assets.open("liveness.html").bufferedReader().readText()
             webView.loadDataWithBaseURL(
-                Constants.BLS_BASE_URL,
-                html,
-                "text/html",
-                "UTF-8",
-                null
+                Constants.BLS_BASE_URL, html, "text/html", "UTF-8", null
             )
         }
     }
-
-    // ── Bridge JavaScript ↔ Kotlin ───────────────────────────────────────────
 
     inner class AndroidBridge {
 
@@ -218,35 +209,24 @@ class LivenessActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onLivenessComplete(livenessId: String) {
             Log.d("Liveness", "✅ ID: $livenessId")
-
             runOnUiThread {
                 CoroutineScope(Dispatchers.Main).launch {
                     val sha     = sha2 ?: livenessData?.sha ?: return@launch
                     val rawData = livenessData?.rawJson ?: JSONObject()
 
-                    // Écrire le livenessId sur GitHub (sha2 indispensable, évite 409)
                     val ok = withContext(Dispatchers.IO) {
                         github.writeLivenessId(filename, sha, rawData, livenessId)
                     }
 
-                    // Telegram de confirmation (x2 comme l'extension Chrome)
                     withContext(Dispatchers.IO) {
                         github.sendTelegram(
-                            "✅ *Selfie terminé*\n" +
-                            "🆔 *Liveness ID:* `$livenessId`\n" +
-                            "📁 *Fichier:* $filename\n" +
-                            "💾 *GitHub:* ${if (ok) "✅ Mis à jour" else "❌ Erreur"}"
+                            "✅ *Selfie terminé*\n🆔 *Liveness ID:* `$livenessId`\n📁 *Fichier:* $filename\n💾 *GitHub:* ${if (ok) "✅" else "❌"}"
                         )
                         Thread.sleep(500)
                         github.sendTelegram(
-                            "✅ *Commande injection manuelle :*\n" +
-                            "```javascript\n" +
-                            "document.getElementById('LivenessId').value = \"$livenessId\";\n" +
-                            "document.getElementById('formLiveness').submit();\n" +
-                            "```"
+                            "✅ *Commande injection :*\n```javascript\ndocument.getElementById('LivenessId').value = \"$livenessId\";\ndocument.getElementById('formLiveness').submit();\n```"
                         )
                     }
-
                     showDoneScreen(livenessId)
                 }
             }
@@ -254,40 +234,30 @@ class LivenessActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun onLivenessError(error: String) {
-            Log.e("Liveness", "❌ Erreur: $error")
+            Log.e("Liveness", "❌ $error")
             runOnUiThread {
-                Toast.makeText(this@LivenessActivity,
-                    "Erreur selfie: $error", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@LivenessActivity, "Erreur selfie: $error", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    // ── Écran de confirmation ─────────────────────────────────────────────────
-
     private fun showDoneScreen(livenessId: String) {
         webView.loadDataWithBaseURL(null, """
-            <html><body style="margin:0;
-              background:linear-gradient(135deg,#07111f,#0f2a44);
-              display:flex;justify-content:center;align-items:center;
-              min-height:100vh;font-family:Arial;color:white;text-align:center;padding:20px">
+            <html><body style="margin:0;background:linear-gradient(135deg,#07111f,#0f2a44);
+              display:flex;justify-content:center;align-items:center;min-height:100vh;
+              font-family:Arial;color:white;text-align:center;padding:20px">
             <div>
               <div style="font-size:80px">✅</div>
               <h2 style="color:#f5d27a;margin:20px 0">Selfie envoyé !</h2>
-              <p style="opacity:.8;line-height:1.6">
-                Votre selfie a été transmis à l'opérateur.<br>
-                Votre rendez-vous sera finalisé sous peu.
-              </p>
+              <p style="opacity:.8;line-height:1.6">Votre selfie a été transmis.<br>Votre rendez-vous sera finalisé sous peu.</p>
               <p style="font-size:10px;opacity:.3;margin-top:30px">${livenessId.take(16)}…</p>
             </div></body></html>
         """.trimIndent(), "text/html", "UTF-8", null)
     }
 
-    // ── Cleanup proxy au destroy ──────────────────────────────────────────────
-
     override fun onDestroy() {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-            ProxyController.getInstance()
-                .clearProxyOverride(Executors.newSingleThreadExecutor()) {}
+            ProxyController.getInstance().clearProxyOverride(Executors.newSingleThreadExecutor()) {}
         }
         super.onDestroy()
     }
