@@ -19,28 +19,26 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Gradle 8.0
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.0'
 
       # Injecter google-services.json depuis le secret GitHub
       - name: Injecter google-services.json
         run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
 
-      # Injecter les secrets dans secrets.properties
+      # Injecter les secrets dans secrets.properties (sans indentation)
       - name: Injecter secrets.properties
         run: |
-          cat > secrets.properties <<EOF
-          GITHUB_TOKEN=${{ secrets.APP_GITHUB_TOKEN }}
-          TELEGRAM_BOT=${{ secrets.TELEGRAM_BOT }}
-          TELEGRAM_CHAT=${{ secrets.TELEGRAM_CHAT }}
-          WORKER_URL=${{ secrets.WORKER_URL }}
-          EOF
-
-      - name: Rendre gradlew exécutable
-        run: chmod +x gradlew
+          printf 'GITHUB_TOKEN=%s\nTELEGRAM_BOT=%s\nTELEGRAM_CHAT=%s\nWORKER_URL=%s\n' \
+            '${{ secrets.APP_GITHUB_TOKEN }}' \
+            '${{ secrets.TELEGRAM_BOT }}' \
+            '${{ secrets.TELEGRAM_CHAT }}' \
+            '${{ secrets.WORKER_URL }}' > secrets.properties
 
       - name: Build APK (debug)
-        run: ./gradlew assembleDebug
+        run: gradle assembleDebug
 
       # Publier l'APK en artifact téléchargeable
       - name: Upload APK
