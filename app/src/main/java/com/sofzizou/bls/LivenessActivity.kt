@@ -98,6 +98,9 @@ class LivenessActivity : AppCompatActivity() {
             ): WebResourceResponse? {
                 val url = request.url.toString()
                 if (!url.contains("ozforensics.com")) return null
+                // Ne jamais intercepter les POST/PUT : le body est inaccessible via
+                // WebResourceRequest → OzForensics recevrait un POST vide → erreur 1-22
+                if (request.method.uppercase() != "GET") return null
 
                 val ip = livenessData?.ip       ?: return null
                 val ua = livenessData?.userAgent ?: return null
