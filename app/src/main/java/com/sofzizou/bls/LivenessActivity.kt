@@ -96,47 +96,12 @@ class LivenessActivity : AppCompatActivity() {
                 }
             }
 
-            // ── GET vers ozforensics/jscrambler : injecte UA + X-Forwarded-For via OkHttp ──
-            override fun shouldInterceptRequest(
-                view: WebView,
-                request: WebResourceRequest
-            ): WebResourceResponse? {
-                val url = request.url.toString()
-                val isTarget = url.contains("ozforensics.com") || url.contains("jscrambler.com")
-                if (!isTarget) return null
-                // POST ignoré : body inaccessible → erreur 1-22. Les POST sont couverts
-                // par le patch XHR/fetch injecté dans buildInjectScript().
-                if (request.method.uppercase() != "GET") return null
-
-                val ip = livenessData?.ip       ?: return null
-                val ua = livenessData?.userAgent ?: return null
-                if (ip == "N/A" && ua == "N/A") return null
-
-                return try {
-                    val reqBuilder = okhttp3.Request.Builder().url(url)
-                    request.requestHeaders.forEach { (k, v) ->
-                        if (!k.equals("User-Agent", ignoreCase = true))
-                            try { reqBuilder.header(k, v) } catch (_: Exception) {}
-                    }
-                    if (ua != "N/A") reqBuilder.header("User-Agent", ua)
-                    if (ip != "N/A") reqBuilder.header("X-Forwarded-For", ip)
-                    reqBuilder.header("Referer",
-                        "https://algeria.blsspainglobal.com/dza/appointment/livenessrequest")
-
-                    val resp        = github.httpClient().newCall(reqBuilder.build()).execute()
-                    val contentType = resp.header("Content-Type") ?: "application/octet-stream"
-                    val mime        = contentType.split(";").first().trim()
-                    val encoding    = if (contentType.contains("charset="))
-                                         contentType.substringAfter("charset=").trim() else "UTF-8"
-                    val respHeaders = mutableMapOf<String, String>()
-                    resp.headers.forEach { (k, v) -> respHeaders[k] = v }
-                    WebResourceResponse(mime, encoding, resp.code,
-                        resp.message.ifEmpty { "OK" }, respHeaders, resp.body?.byteStream())
-                } catch (e: Exception) {
-                    Log.e("OzIntercept", "Erreur: ${e.message}")
-                    null
-                }
-            }
+            // NE PAS intercepter les requêtes OzForensics via OkHttp :
+            // OkHttp a un TLS fingerprint Java (non-Chrome) → OzForensics CDN détecte
+            // un bot et renvoie un contenu vide → OzLiveness jamais défini → timeout.
+            // Le WebView Chromium fait les requêtes nativement avec le bon fingerprint.
+            // UA = webView.settings.userAgentString (toutes requêtes).
+            // X-Forwarded-For = patch XHR/fetch dans buildInjectScript() (API calls POST).
 
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
                 Log.e("WebView", "Error ${err.errorCode}: ${err.description} @ ${req.url}")
