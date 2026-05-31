@@ -6,7 +6,7 @@
     <title>BLS Liveness</title>
 
     <!--
-        Patch XHR + fetch AVANT tout autre script.
+        ① PATCH XHR + fetch AVANT tout autre script.
         Garantit X-Forwarded-For + X-Real-IP sur TOUTES les requêtes
         (GET ET POST) vers ozforensics.com et jscrambler.com.
         Équivalent de declarativeNetRequest de l'extension Chrome.
@@ -26,7 +26,6 @@
             catch(e) { return 'N/A'; }
         }
 
-        /* ── XMLHttpRequest ── */
         var XHR      = XMLHttpRequest.prototype;
         var origOpen = XHR.open;
         var origSet  = XHR.setRequestHeader;
@@ -53,7 +52,6 @@
             return origSend.apply(this, [body]);
         };
 
-        /* ── fetch ── */
         if (window.fetch) {
             var origFetch = window.fetch;
             window.fetch = function(input, init) {
@@ -85,6 +83,11 @@
 
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+        }
         body {
             background: linear-gradient(135deg, #07111f, #0f2a44);
             min-height: 100vh;
@@ -123,17 +126,29 @@
         'use strict';
 
         function setStatus(msg) {
-            document.getElementById('status').textContent = msg;
+            var s = document.getElementById('status');
+            if (s) s.textContent = msg;
         }
 
         function loadScript(url) {
             return new Promise(function(resolve, reject) {
+                console.log('[BLS] Chargement: ' + url);
                 var s = document.createElement('script');
                 s.src = url;
-                s.onload = resolve;
-                s.onerror = function() { reject(new Error('Erreur chargement: ' + url)); };
+                s.onload = function() {
+                    console.log('[BLS] Chargé: ' + url);
+                    resolve();
+                };
+                s.onerror = function() {
+                    console.error('[BLS] Erreur chargement: ' + url);
+                    reject(new Error('Erreur chargement: ' + url));
+                };
                 document.head.appendChild(s);
             });
+        }
+
+        function sleep(ms) {
+            return new Promise(function(r) { setTimeout(r, ms); });
         }
 
         async function init() {
@@ -143,24 +158,42 @@
                 var ip  = Android.getIP();
                 var ua  = Android.getUA();
 
+                console.log('[BLS] init', {
+                    uid: uid ? uid.substring(0, 8) + '...' : 'N/A',
+                    tid: tid ? tid.substring(0, 8) + '...' : 'N/A',
+                    ip:  ip,
+                    ua:  ua ? ua.substring(0, 50) + '...' : 'N/A'
+                });
+
                 setStatus('Chargement du SDK selfie...');
 
+                /* ─── 1. CSS d'abord, seul (comme l'extension) ─── */
                 var css = document.createElement('link');
                 css.rel  = 'stylesheet';
                 css.href = 'https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin/liveness-81ab90655a.css?ver=1.8.1-10';
                 document.head.appendChild(css);
 
+                /* ─── 2. Attendre 1s pour que le CSS soit traité (extension fait pareil) ─── */
+                await sleep(1000);
+
+                /* ─── 3. Scripts dans le MÊME ordre que l'extension, avec délais de 500ms ─── */
                 await loadScript('https://code.jquery.com/jquery-3.6.0.min.js');
+                await sleep(500);
+
                 await loadScript('https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin/ozliveness_main.js?ver=1.8.1-10');
+                await sleep(500);
+
                 await loadScript('https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php?ver=1.8.1-10');
 
                 setStatus('Préparation du selfie...');
 
+                /* ─── 4. Polling OzLiveness toutes les 500ms (max 60s) ─── */
                 var attempts = 0;
                 var checkOz = setInterval(function() {
                     attempts++;
                     if (typeof OzLiveness !== 'undefined' && typeof OzLiveness.open === 'function') {
                         clearInterval(checkOz);
+                        console.log('[BLS] OzLiveness détecté après ' + attempts + ' tentatives');
                         launchOz(uid, tid, ip, ua);
                     } else if (attempts >= 120) {
                         clearInterval(checkOz);
@@ -170,6 +203,7 @@
                 }, 500);
 
             } catch (e) {
+                console.error('[BLS] init error:', e);
                 setStatus('Erreur : ' + e.message);
                 Android.onLivenessError(e.message);
             }
@@ -179,6 +213,10 @@
             document.getElementById('loader').style.display = 'none';
             setStatus('Prêt — selfie en cours...');
 
+            /* Body overflow auto (comme content_favicon.js de l'extension) */
+            document.body.style.overflow = 'auto';
+
+            /* Config IDENTIQUE à l'extension (background.js lignes 409-436) */
             var config = {
                 lang: 'en',
                 meta: {
@@ -190,23 +228,32 @@
                 headers: {}
             };
 
-            if (ip && ip !== 'N/A') {
+            if (ip && ip !== 'N/A' && ip !== 'undefined' && ip !== '') {
                 config.headers['X-Forwarded-For'] = ip;
                 config.headers['X-Real-IP']       = ip;
+                console.log('[BLS] Headers IP:', ip);
             }
-            if (ua && ua !== 'N/A') {
+            if (ua && ua !== 'N/A' && ua !== '' && ua !== 'undefined') {
                 config.headers['User-Agent'] = ua;
+                console.log('[BLS] User-Agent:', ua.substring(0, 60) + '...');
             }
-
-            if (Object.keys(config.headers).length === 0) delete config.headers;
+            if (Object.keys(config.headers).length === 0) {
+                delete config.headers;
+                console.log('[BLS] Aucun header personnalisé');
+            } else {
+                console.log('[BLS] config.headers:', JSON.stringify(config.headers));
+            }
 
             config.on_complete = function(result) {
-                console.log('[OZ] on_complete:', JSON.stringify(result));
+                console.log('[BLS] on_complete:', JSON.stringify(result));
                 var livenessId = result.event_session_id ||
                                  result.session_id       ||
                                  result.liveness_id      ||
                                  result.LivenessId       ||
-                                 result.id;
+                                 result.id               ||
+                                 result.result           ||
+                                 (result.data && result.data.liveness_id) ||
+                                 (result.meta && result.meta.liveness_id);
                 if (livenessId) {
                     setStatus('✅ Selfie terminé !');
                     Android.onLivenessComplete(livenessId);
@@ -218,12 +265,22 @@
             };
 
             config.on_error = function(error) {
-                var detail = JSON.stringify(error);
-                console.error('[OZ] on_error:', detail);
-                setStatus('❌ ' + detail.substring(0, 120));
+                /* Sérialisation robuste : Error native, objet, string ou null */
+                var detail;
+                try {
+                    if (error == null) detail = 'null (SDK a fermé sans détail)';
+                    else if (error instanceof Error) detail = error.name + ': ' + error.message;
+                    else if (typeof error === 'string') detail = error;
+                    else detail = JSON.stringify(error);
+                } catch(e) {
+                    detail = String(error);
+                }
+                console.error('[BLS] on_error:', detail);
+                setStatus('❌ ' + detail.substring(0, 150));
                 Android.onLivenessError(detail);
             };
 
+            console.log('[BLS] OzLiveness.open() appelé');
             OzLiveness.open(config);
         }
 
