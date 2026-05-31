@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BLS Liveness</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(135deg, #07111f, #0f2a44);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-family: Arial, sans-serif;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+        #loader {
+            width: 60px; height: 60px;
+            border: 4px solid rgba(255,255,255,0.1);
+            border-top: 4px solid #f5d27a;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #status {
+            font-size: 16px;
+            color: #f5d27a;
+            max-width: 300px;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div id="loader"></div>
+    <div id="status">Initialisation...</div>
+
+    <script>
+    (function() {
+        'use strict';
+
+        function setStatus(msg) {
+            document.getElementById('status').textContent = msg;
+        }
+
+        function loadScript(url) {
+            return new Promise(function(resolve, reject) {
+                var s = document.createElement('script');
+                s.src = url;
+                s.onload = resolve;
+                s.onerror = function() { reject(new Error('Erreur chargement: ' + url)); };
+                document.head.appendChild(s);
+            });
+        }
+
+        async function init() {
+            try {
+                // Données injectées par l'app Android via JavascriptInterface
+                var uid = Android.getUID();
+                var tid = Android.getTID();
+                var ip  = Android.getIP();
+                var ua  = Android.getUA();
+
+                setStatus('Chargement du SDK selfie...');
+
+                // CSS OzForensics
+                var css = document.createElement('link');
+                css.rel  = 'stylesheet';
+                css.href = 'https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin/liveness-81ab90655a.css?ver=1.8.1-10';
+                document.head.appendChild(css);
+
+                // Scripts OzForensics (même ordre que l'extension Chrome)
+                await loadScript('https://code.jquery.com/jquery-3.6.0.min.js');
+                await loadScript('https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin/ozliveness_main.js?ver=1.8.1-10');
+                await loadScript('https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php?ver=1.8.1-10');
+
+                setStatus('Préparation du selfie...');
+
+                // Attendre OzLiveness (poll 500ms × 120 = 60s max)
+                var attempts = 0;
+                var checkOz = setInterval(function() {
+                    attempts++;
+                    if (typeof OzLiveness !== 'undefined' && typeof OzLiveness.open === 'function') {
+                        clearInterval(checkOz);
+                        launchOz(uid, tid, ip, ua);
+                    } else if (attempts >= 120) {
+                        clearInterval(checkOz);
+                        setStatus('Erreur : SDK non chargé (timeout)');
+                        Android.onLivenessError('Timeout: OzLiveness non disponible');
+                    }
+                }, 500);
+
+            } catch (e) {
+                setStatus('Erreur : ' + e.message);
+                Android.onLivenessError(e.message);
+            }
+        }
+
+        function launchOz(uid, tid, ip, ua) {
+            document.getElementById('loader').style.display = 'none';
+            setStatus('Prêt — selfie en cours...');
+
+            var config = {
+                lang: 'fr',
+                meta: {
+                    user_id:        uid,
+                    transaction_id: tid
+                },
+                overlay_options: false,
+                action: ['video_selfie_blank'],
+                headers: {}
+            };
+
+            if (ip && ip !== 'N/A') {
+                config.headers['X-Forwarded-For'] = ip;
+                config.headers['X-Real-IP']       = ip;
+            }
+            if (ua && ua !== 'N/A') {
+                config.headers['User-Agent'] = ua;
+            }
+            if (Object.keys(config.headers).length === 0) delete config.headers;
+
+            config.on_complete = function(result) {
+                var livenessId = result.event_session_id ||
+                                 result.session_id       ||
+                                 result.liveness_id      ||
+                                 result.LivenessId       ||
+                                 result.id;
+                if (livenessId) {
+                    setStatus('✅ Selfie terminé !');
+                    Android.onLivenessComplete(livenessId);
+                } else {
+                    setStatus('Erreur : ID introuvable');
+                    Android.onLivenessError('Liveness ID manquant: ' + JSON.stringify(result));
+                }
+            };
+
+            config.on_error = function(error) {
+                setStatus('Erreur selfie');
+                Android.onLivenessError(JSON.stringify(error));
+            };
+
+            OzLiveness.open(config);
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    })();
+    </script>
+</body>
+</html>

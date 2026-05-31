@@ -1,0 +1,51 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # Lancement manuel depuis l'onglet Actions
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Injecter google-services.json depuis le secret GitHub
+      - name: Injecter google-services.json
+        run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
+
+      # Injecter les secrets dans secrets.properties
+      - name: Injecter secrets.properties
+        run: |
+          cat > secrets.properties <<EOF
+          GITHUB_TOKEN=${{ secrets.APP_GITHUB_TOKEN }}
+          TELEGRAM_BOT=${{ secrets.TELEGRAM_BOT }}
+          TELEGRAM_CHAT=${{ secrets.TELEGRAM_CHAT }}
+          WORKER_URL=${{ secrets.WORKER_URL }}
+          EOF
+
+      - name: Rendre gradlew exécutable
+        run: chmod +x gradlew
+
+      - name: Build APK (debug)
+        run: ./gradlew assembleDebug
+
+      # Publier l'APK en artifact téléchargeable
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: BLSVisa-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30

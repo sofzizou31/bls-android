@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'com.google.gms.google-services'
+}
+
+// Charge secrets.properties si présent (développement local)
+def secretsFile = rootProject.file("secrets.properties")
+def secrets = new Properties()
+if (secretsFile.exists()) {
+    secrets.load(new FileInputStream(secretsFile))
+}
+
+android {
+    namespace 'com.sofzizou.bls'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.sofzizou.bls"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "2.0.0"
+
+        buildConfigField "String", "GITHUB_TOKEN",  "\"${secrets.getProperty('GITHUB_TOKEN',  System.getenv('GITHUB_TOKEN')  ?: '')}\""
+        buildConfigField "String", "TELEGRAM_BOT",  "\"${secrets.getProperty('TELEGRAM_BOT',  System.getenv('TELEGRAM_BOT')  ?: '')}\""
+        buildConfigField "String", "TELEGRAM_CHAT", "\"${secrets.getProperty('TELEGRAM_CHAT', System.getenv('TELEGRAM_CHAT') ?: '')}\""
+        buildConfigField "String", "WORKER_URL",    "\"${secrets.getProperty('WORKER_URL',    System.getenv('WORKER_URL')    ?: '')}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.webkit:webkit:1.8.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    implementation platform('com.google.firebase:firebase-bom:32.5.0')
+    implementation 'com.google.firebase:firebase-messaging-ktx'
+}
