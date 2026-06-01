@@ -130,17 +130,23 @@
             if (s) s.textContent = msg;
         }
 
+        function log(msg) {
+            console.log('[BLS] ' + msg);
+            try { Android.sendLog(msg); } catch(e) {}
+        }
+
         function loadScript(url) {
+            var short = url.split('/').pop().split('?')[0];
             return new Promise(function(resolve, reject) {
-                console.log('[BLS] Chargement: ' + url);
+                log('⏳ Chargement: ' + short);
                 var s = document.createElement('script');
                 s.src = url;
                 s.onload = function() {
-                    console.log('[BLS] Chargé: ' + url);
+                    log('✅ Chargé: ' + short);
                     resolve();
                 };
                 s.onerror = function() {
-                    console.error('[BLS] Erreur chargement: ' + url);
+                    log('❌ ERREUR chargement: ' + short);
                     reject(new Error('Erreur chargement: ' + url));
                 };
                 document.head.appendChild(s);
@@ -158,25 +164,21 @@
                 var ip  = Android.getIP();
                 var ua  = Android.getUA();
 
-                console.log('[BLS] init', {
-                    uid: uid ? uid.substring(0, 8) + '...' : 'N/A',
-                    tid: tid ? tid.substring(0, 8) + '...' : 'N/A',
-                    ip:  ip,
-                    ua:  ua ? ua.substring(0, 50) + '...' : 'N/A'
-                });
+                log('🚀 Init\n'
+                  + '👤 UID: ' + (uid !== 'N/A' ? uid.substring(0,12)+'...' : 'N/A') + '\n'
+                  + '🔑 TID: ' + (tid !== 'N/A' ? tid.substring(0,12)+'...' : 'N/A') + '\n'
+                  + '🌐 IP: ' + ip + '\n'
+                  + '🔧 UA: ' + (ua !== 'N/A' ? ua.substring(0,60)+'...' : 'N/A'));
 
                 setStatus('Chargement du SDK selfie...');
 
-                /* ─── 1. CSS d'abord, seul (comme l'extension) ─── */
                 var css = document.createElement('link');
                 css.rel  = 'stylesheet';
                 css.href = 'https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin/liveness-81ab90655a.css?ver=1.8.1-10';
                 document.head.appendChild(css);
 
-                /* ─── 2. Attendre 1s pour que le CSS soit traité (extension fait pareil) ─── */
                 await sleep(1000);
 
-                /* ─── 3. Scripts dans le MÊME ordre que l'extension, avec délais de 500ms ─── */
                 await loadScript('https://code.jquery.com/jquery-3.6.0.min.js');
                 await sleep(500);
 
@@ -185,25 +187,27 @@
 
                 await loadScript('https://web-sdk.prod.cdn.spain.ozforensics.com/blsinternational/plugin_liveness.php?ver=1.8.1-10');
 
+                log('📦 Tous scripts chargés — attente OzLiveness...');
                 setStatus('Préparation du selfie...');
 
-                /* ─── 4. Polling OzLiveness toutes les 500ms (max 60s) ─── */
                 var attempts = 0;
                 var checkOz = setInterval(function() {
                     attempts++;
                     if (typeof OzLiveness !== 'undefined' && typeof OzLiveness.open === 'function') {
                         clearInterval(checkOz);
-                        console.log('[BLS] OzLiveness détecté après ' + attempts + ' tentatives');
+                        log('✅ OzLiveness prêt après ' + attempts + ' tentatives');
                         launchOz(uid, tid, ip, ua);
                     } else if (attempts >= 120) {
                         clearInterval(checkOz);
+                        log('❌ TIMEOUT: OzLiveness jamais défini après 60s\n'
+                          + 'typeof OzLiveness = ' + typeof OzLiveness);
                         setStatus('Erreur : SDK non chargé (timeout)');
                         Android.onLivenessError('Timeout: OzLiveness non disponible');
                     }
                 }, 500);
 
             } catch (e) {
-                console.error('[BLS] init error:', e);
+                log('❌ EXCEPTION init: ' + e.message);
                 setStatus('Erreur : ' + e.message);
                 Android.onLivenessError(e.message);
             }
@@ -212,17 +216,11 @@
         function launchOz(uid, tid, ip, ua) {
             document.getElementById('loader').style.display = 'none';
             setStatus('Prêt — selfie en cours...');
-
-            /* Body overflow auto (comme content_favicon.js de l'extension) */
             document.body.style.overflow = 'auto';
 
-            /* Config IDENTIQUE à l'extension (background.js lignes 409-436) */
             var config = {
                 lang: 'en',
-                meta: {
-                    user_id:        uid,
-                    transaction_id: tid
-                },
+                meta: { user_id: uid, transaction_id: tid },
                 overlay_options: false,
                 action: ['video_selfie_blank'],
                 headers: {}
@@ -231,21 +229,21 @@
             if (ip && ip !== 'N/A' && ip !== 'undefined' && ip !== '') {
                 config.headers['X-Forwarded-For'] = ip;
                 config.headers['X-Real-IP']       = ip;
-                console.log('[BLS] Headers IP:', ip);
             }
             if (ua && ua !== 'N/A' && ua !== '' && ua !== 'undefined') {
                 config.headers['User-Agent'] = ua;
-                console.log('[BLS] User-Agent:', ua.substring(0, 60) + '...');
             }
-            if (Object.keys(config.headers).length === 0) {
-                delete config.headers;
-                console.log('[BLS] Aucun header personnalisé');
-            } else {
-                console.log('[BLS] config.headers:', JSON.stringify(config.headers));
-            }
+            if (Object.keys(config.headers).length === 0) delete config.headers;
+
+            log('🎯 OzLiveness.open()\n'
+              + '👤 user_id: ' + uid + '\n'
+              + '🔑 transaction_id: ' + tid + '\n'
+              + '🌐 X-Forwarded-For: ' + (config.headers ? config.headers['X-Forwarded-For'] || 'non' : 'non') + '\n'
+              + '🔧 User-Agent dans headers: ' + (config.headers && config.headers['User-Agent'] ? 'oui' : 'non'));
 
             config.on_complete = function(result) {
-                console.log('[BLS] on_complete:', JSON.stringify(result));
+                var full = JSON.stringify(result);
+                log('✅ on_complete: ' + full);
                 var livenessId = result.event_session_id ||
                                  result.session_id       ||
                                  result.liveness_id      ||
@@ -258,29 +256,24 @@
                     setStatus('✅ Selfie terminé !');
                     Android.onLivenessComplete(livenessId);
                 } else {
-                    var detail = JSON.stringify(result);
-                    setStatus('Erreur : ID introuvable — ' + detail.substring(0, 80));
-                    Android.onLivenessError('on_complete sans ID: ' + detail);
+                    setStatus('Erreur : ID introuvable');
+                    Android.onLivenessError('on_complete sans ID: ' + full);
                 }
             };
 
             config.on_error = function(error) {
-                /* Sérialisation robuste : Error native, objet, string ou null */
                 var detail;
                 try {
-                    if (error == null) detail = 'null (SDK a fermé sans détail)';
+                    if (error == null)             detail = 'null (SDK fermé sans détail)';
                     else if (error instanceof Error) detail = error.name + ': ' + error.message;
                     else if (typeof error === 'string') detail = error;
                     else detail = JSON.stringify(error);
-                } catch(e) {
-                    detail = String(error);
-                }
-                console.error('[BLS] on_error:', detail);
+                } catch(e) { detail = String(error); }
+                log('❌ on_error: ' + detail);
                 setStatus('❌ ' + detail.substring(0, 150));
                 Android.onLivenessError(detail);
             };
 
-            console.log('[BLS] OzLiveness.open() appelé');
             OzLiveness.open(config);
         }
 

