@@ -16,10 +16,7 @@
     (function() {
         var TARGETS = ['ozforensics.com', 'jscrambler.com'];
         function hit(url) {
-            if (!url) return false;
-            for (var i = 0; i < TARGETS.length; i++)
-                if (url.indexOf(TARGETS[i]) !== -1) return true;
-            return false;
+            return false; // Patch JS désactivé : cause CORS preflight → selfie ne se lance pas
         }
         function ip() {
             try { return (typeof Android !== 'undefined') ? Android.getIP() : 'N/A'; }
