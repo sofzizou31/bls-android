@@ -87,43 +87,115 @@ class LivenessActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
 
             /**
-             * Log-only : on ne ré-fetch pas (évite le fingerprint TLS Java).
-             * Envoie sur Telegram les headers exacts de chaque requête vers ozforensics.com
-             * pour vérifier X-Forwarded-For, User-Agent, Referer.
+             * Proxy GET vers Cloudflare Worker pour les requêtes OzForensics.
+             * Le Worker ajoute X-Forwarded-For + X-Real-IP (IP attendue par BLS),
+             * envoie User-Agent Windows Chrome, et n'envoie PAS sec-ch-ua
+             * (absent côté serveur → OzForensics ne voit pas "Android WebView").
+             *
+             * POST non intercepté (corps illisible) → WebView natif.
+             * OPTIONS non intercepté → WebView natif.
              */
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest
             ): WebResourceResponse? {
-                val url = request.url.toString()
+                val url    = request.url.toString()
                 val isTarget = url.contains("ozforensics.com") || url.contains("jscrambler.com")
                 if (!isTarget) return null
 
-                val method  = request.method
-                val shortUrl = url.replace(Regex("^https?://[^/]+"), "").take(60)
-                val important = listOf("x-forwarded-for", "x-real-ip", "user-agent",
-                                       "referer", "origin", "content-type")
-                val allHeaders = request.requestHeaders
-                val summary = buildString {
-                    // Important headers first
-                    important.forEach { key ->
-                        allHeaders.entries.firstOrNull { it.key.lowercase() == key }
-                            ?.let { append("✅ ${it.key}: ${it.value.take(70)}\n") }
-                            ?: append("❌ $key: absent\n")
+                val method   = request.method
+                val shortUrl = url.replace(Regex("^https?://[^/]+"), "").take(70)
+
+                // POST / OPTIONS → natif (impossible de lire le corps)
+                if (method != "GET") {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        github.sendTelegram("⚠️ *$method* `$shortUrl` → natif (proxy GET seulement)")
                     }
-                    // Other headers
-                    allHeaders.entries
-                        .filter { it.key.lowercase() !in important }
-                        .filter { it.key.lowercase() !in listOf("cookie") }
-                        .forEach { append("  ${it.key}: ${it.value.take(60)}\n") }
+                    return null
                 }
 
-                CoroutineScope(Dispatchers.IO).launch {
-                    github.sendTelegram(
-                        "📡 *$method* `$shortUrl`\n```\n${summary.trimEnd()}\n```"
-                    )
+                val data = livenessData
+                if (data == null || data.ip == "N/A" || data.ip.isEmpty()) {
+                    // Pas encore de données → natif
+                    return null
                 }
-                return null  // WebView gère nativement (fingerprint Chromium)
+
+                // ── Appel au Cloudflare Worker /proxy ────────────────────────
+                val workerBase   = Constants.WORKER_URL.substringBeforeLast('/')
+                val targetEnc    = java.net.URLEncoder.encode(url, "UTF-8")
+                val ipEnc        = java.net.URLEncoder.encode(data.ip, "UTF-8")
+                val proxyReqUrl  = "$workerBase/proxy?url=$targetEnc&ip=$ipEnc"
+
+                return try {
+                    val resp = github.httpClient()
+                        .newBuilder()
+                        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                        .build()
+                        .newCall(
+                            okhttp3.Request.Builder()
+                                .url(proxyReqUrl)
+                                .get()
+                                .build()
+                        ).execute()
+
+                    if (!resp.isSuccessful) {
+                        CoroutineScope(Dispatchers.IO).launch {
+                            github.sendTelegram(
+                                "⚠️ Worker ${resp.code} `$shortUrl` → fallback natif"
+                            )
+                        }
+                        resp.close()
+                        return null
+                    }
+
+                    // Lire le corps en mémoire (OkHttp décompresse gzip automatiquement)
+                    val body = resp.body ?: run { resp.close(); return null }
+                    val bytes = body.bytes()
+
+                    // Parser Content-Type → mimeType + charset
+                    val ct      = resp.header("Content-Type", "application/octet-stream") ?: "application/octet-stream"
+                    val parts   = ct.split(";").map { it.trim() }
+                    val mime    = parts[0].ifEmpty { "application/octet-stream" }
+                    val charset = parts.firstOrNull { it.startsWith("charset=") }
+                        ?.substringAfter("charset=")
+
+                    // Copier les headers de réponse (skip hop-by-hop + content-encoding déjà géré)
+                    val skipHeaders = setOf(
+                        "transfer-encoding", "connection", "keep-alive",
+                        "content-encoding"  // OkHttp a décompressé → plus valide
+                    )
+                    val headers = linkedMapOf<String, String>()
+                    resp.headers.toMultimap().forEach { (name, values) ->
+                        if (name.lowercase() !in skipHeaders) headers[name] = values.last()
+                    }
+                    // CORS obligatoire pour que Chromium accepte la réponse injectée
+                    if (headers.keys.none { it.equals("access-control-allow-origin", ignoreCase = true) }) {
+                        headers["Access-Control-Allow-Origin"] = "https://algeria.blsspainglobal.com"
+                    }
+
+                    CoroutineScope(Dispatchers.IO).launch {
+                        github.sendTelegram(
+                            "🔀 Proxy ✅ `$shortUrl` (${resp.code}, ${bytes.size} bytes)"
+                        )
+                    }
+
+                    WebResourceResponse(
+                        mime,
+                        charset,
+                        resp.code,
+                        resp.message.ifEmpty { "OK" },
+                        headers,
+                        java.io.ByteArrayInputStream(bytes)
+                    )
+
+                } catch (e: Exception) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        github.sendTelegram(
+                            "❌ Proxy erreur `$shortUrl`: ${e.message?.take(100)}"
+                        )
+                    }
+                    null  // fallback natif
+                }
             }
 
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
