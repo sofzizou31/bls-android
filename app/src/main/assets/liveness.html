@@ -16,10 +16,7 @@
     (function() {
         var TARGETS = ['ozforensics.com', 'jscrambler.com'];
         function hit(url) {
-            if (!url) return false;
-            for (var i = 0; i < TARGETS.length; i++)
-                if (url.indexOf(TARGETS[i]) !== -1) return true;
-            return false;
+            return false; // Désactivé — headers injectés via shouldInterceptRequest (niveau réseau, pas CORS)
         }
         function ip() {
             try { return (typeof Android !== 'undefined') ? Android.getIP() : 'N/A'; }
@@ -229,28 +226,20 @@
             setStatus('Prêt — selfie en cours...');
             document.body.style.overflow = 'auto';
 
+            // config.headers supprimé : X-Forwarded-For en JS déclenche CORS preflight → fail
+            // Les headers sont injectés au niveau réseau par shouldInterceptRequest (Kotlin)
             var config = {
                 lang: 'en',
                 meta: { user_id: uid, transaction_id: tid },
                 overlay_options: false,
-                action: ['video_selfie_blank'],
-                headers: {}
+                action: ['video_selfie_blank']
             };
-
-            if (ip && ip !== 'N/A' && ip !== 'undefined' && ip !== '') {
-                config.headers['X-Forwarded-For'] = ip;
-                config.headers['X-Real-IP']       = ip;
-            }
-            if (ua && ua !== 'N/A' && ua !== '' && ua !== 'undefined') {
-                config.headers['User-Agent'] = ua;
-            }
-            if (Object.keys(config.headers).length === 0) delete config.headers;
 
             log('🎯 OzLiveness.open()\n'
               + '👤 user_id: ' + uid + '\n'
               + '🔑 transaction_id: ' + tid + '\n'
-              + '🌐 X-Forwarded-For: ' + (config.headers ? config.headers['X-Forwarded-For'] || 'non' : 'non') + '\n'
-              + '🔧 User-Agent dans headers: ' + (config.headers && config.headers['User-Agent'] ? 'oui' : 'non') + '\n'
+              + '🌐 IP injectée via shouldInterceptRequest: ' + ip + '\n'
+              + '🔧 config.headers: SUPPRIMÉ (anti-CORS)\n'
               + '🔒 isSecureContext: ' + window.isSecureContext + '\n'
               + '📷 mediaDevices: ' + (navigator.mediaDevices ? 'oui' : 'NON') + '\n'
               + '🔑 OZ keys: ' + Object.keys(OzLiveness).join(', '));

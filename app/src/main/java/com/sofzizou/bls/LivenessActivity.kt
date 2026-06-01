@@ -86,6 +86,82 @@ class LivenessActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
 
+            /**
+             * Équivalent Android de declarativeNetRequest de l'extension Chrome.
+             * Intercèpte les requêtes GET vers ozforensics.com / jscrambler.com
+             * et injecte les headers (Referer, X-Forwarded-For, X-Real-IP, User-Agent)
+             * au niveau réseau — sans déclencher de CORS preflight côté JS.
+             * POST laissé intact (WebView natif) car on ne peut pas lire le body.
+             */
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                val url = request.url.toString()
+                if (request.method.uppercase() != "GET") return null
+
+                val isTarget = url.contains("ozforensics.com") || url.contains("jscrambler.com")
+                if (!isTarget) return null
+
+                val data = livenessData ?: return null
+
+                return try {
+                    val conn = java.net.URL(url).openConnection()
+                            as java.net.HttpURLConnection
+                    conn.requestMethod   = "GET"
+                    conn.connectTimeout  = 15_000
+                    conn.readTimeout     = 30_000
+                    conn.instanceFollowRedirects = true
+
+                    // Copie des headers WebView originaux (Accept, Accept-Language, etc.)
+                    request.requestHeaders.forEach { (k, v) ->
+                        if (k.lowercase() != "host") {
+                            try { conn.setRequestProperty(k, v) } catch (_: Exception) {}
+                        }
+                    }
+
+                    // Injection réseau — pas de CORS preflight car hors JS
+                    conn.setRequestProperty("Referer", Constants.BLS_BASE_URL)
+                    if (data.ip.isNotBlank() && data.ip != "N/A") {
+                        conn.setRequestProperty("X-Forwarded-For", data.ip)
+                        conn.setRequestProperty("X-Real-IP",       data.ip)
+                    }
+                    if (data.userAgent.isNotBlank() && data.userAgent != "N/A") {
+                        conn.setRequestProperty("User-Agent", data.userAgent)
+                    }
+
+                    conn.connect()
+                    val code = conn.responseCode
+
+                    val rawContentType = conn.contentType ?: "application/javascript"
+                    val mimeType = rawContentType.split(";").first().trim()
+                    val charset  = rawContentType.split(";")
+                        .map { it.trim() }
+                        .firstOrNull { it.startsWith("charset=", ignoreCase = true) }
+                        ?.substringAfter("=")?.trim() ?: "UTF-8"
+
+                    // Collecte des headers de réponse + ajout CORS explicite
+                    val responseHeaders = LinkedHashMap<String, String>()
+                    conn.headerFields.forEach { (k, vals) ->
+                        if (k != null && vals.isNotEmpty())
+                            responseHeaders[k] = vals.joinToString(", ")
+                    }
+                    responseHeaders["Access-Control-Allow-Origin"]      = "*"
+                    responseHeaders["Access-Control-Allow-Credentials"] = "true"
+                    responseHeaders["Access-Control-Allow-Headers"]     =
+                        "X-Forwarded-For, X-Real-IP, User-Agent, Content-Type"
+
+                    val stream = if (code < 400) conn.inputStream else conn.errorStream
+                    Log.d("Intercept", "→ $code $mimeType $url")
+
+                    WebResourceResponse(mimeType, charset, code,
+                        if (code < 400) "OK" else "Error", responseHeaders, stream)
+                } catch (e: Exception) {
+                    Log.e("Intercept", "Fail $url : ${e.message}")
+                    null  // fallback : WebView gère normalement
+                }
+            }
+
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
                 Log.e("WebView", "Error ${err.errorCode}: ${err.description} @ ${req.url}")
             }
