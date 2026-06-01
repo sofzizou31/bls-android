@@ -77,7 +77,10 @@
                         init.headers = h;
                     }
                 }
-                return origFetch.call(window, input, init);
+                return origFetch.call(window, input, init)['catch'](function(err) {
+                    try { if(typeof Android!=='undefined') Android.sendLog('❌ fetch FAIL [' + url.replace(/^https?:\/\//, '').substring(0, 90) + ']: ' + (err && err.message ? err.message : String(err))); } catch(e2){}
+                    throw err;
+                });
             };
         }
     })();
