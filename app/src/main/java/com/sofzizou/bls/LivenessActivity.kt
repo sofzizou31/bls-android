@@ -99,32 +99,64 @@ class LivenessActivity : AppCompatActivity() {
                 view: WebView,
                 request: WebResourceRequest
             ): WebResourceResponse? {
-                val url    = request.url.toString()
+                val url      = request.url.toString()
                 val isTarget = url.contains("ozforensics.com") || url.contains("jscrambler.com")
                 if (!isTarget) return null
 
                 val method   = request.method
                 val shortUrl = url.replace(Regex("^https?://[^/]+"), "").take(70)
 
-                // POST / OPTIONS → natif (impossible de lire le corps)
+                // ── Log : toutes les requêtes OzForensics avec leurs headers ──
+                val allHeaders = request.requestHeaders
+                val important  = listOf("x-forwarded-for","x-real-ip","user-agent",
+                                        "sec-ch-ua","sec-ch-ua-platform","sec-ch-ua-mobile",
+                                        "origin","referer")
+                val headersSummary = buildString {
+                    important.forEach { key ->
+                        allHeaders.entries.firstOrNull { it.key.lowercase() == key }
+                            ?.let { append("  ✅ ${it.key}: ${it.value.take(70)}\n") }
+                            ?: append("  ❌ $key: absent\n")
+                    }
+                }
+                CoroutineScope(Dispatchers.IO).launch {
+                    github.sendTelegram(
+                        "📡 *$method* `$shortUrl`\n```\n${headersSummary.trimEnd()}\n```"
+                    )
+                }
+
+                // POST / OPTIONS → natif (corps illisible → pas de proxy possible)
                 if (method != "GET") {
                     CoroutineScope(Dispatchers.IO).launch {
-                        github.sendTelegram("⚠️ *$method* `$shortUrl` → natif (proxy GET seulement)")
+                        github.sendTelegram("⚠️ *$method* → natif (non-GET, corps non lisible)")
                     }
                     return null
                 }
 
                 val data = livenessData
-                if (data == null || data.ip == "N/A" || data.ip.isEmpty()) {
-                    // Pas encore de données → natif
+                if (data == null) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        github.sendTelegram("⚠️ livenessData NULL → natif (données pas encore chargées)")
+                    }
+                    return null
+                }
+                if (data.ip == "N/A" || data.ip.isEmpty()) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        github.sendTelegram("⚠️ IP = '${data.ip}' → natif (IP absente du JSON GitHub)")
+                    }
                     return null
                 }
 
                 // ── Appel au Cloudflare Worker /proxy ────────────────────────
-                val workerBase   = Constants.WORKER_URL.substringBeforeLast('/')
-                val targetEnc    = java.net.URLEncoder.encode(url, "UTF-8")
-                val ipEnc        = java.net.URLEncoder.encode(data.ip, "UTF-8")
-                val proxyReqUrl  = "$workerBase/proxy?url=$targetEnc&ip=$ipEnc"
+                val workerBase  = Constants.WORKER_URL.substringBeforeLast('/')
+                val targetEnc   = java.net.URLEncoder.encode(url, "UTF-8")
+                val ipEnc       = java.net.URLEncoder.encode(data.ip, "UTF-8")
+                val proxyReqUrl = "$workerBase/proxy?url=$targetEnc&ip=$ipEnc"
+
+                CoroutineScope(Dispatchers.IO).launch {
+                    github.sendTelegram(
+                        "🔄 Proxy → Worker\n🌐 IP: `${data.ip}`\n🔗 `$shortUrl`"
+                    )
+                }
 
                 return try {
                     val resp = github.httpClient()
@@ -141,7 +173,7 @@ class LivenessActivity : AppCompatActivity() {
                     if (!resp.isSuccessful) {
                         CoroutineScope(Dispatchers.IO).launch {
                             github.sendTelegram(
-                                "⚠️ Worker ${resp.code} `$shortUrl` → fallback natif"
+                                "❌ Worker ${resp.code} `$shortUrl` → fallback natif"
                             )
                         }
                         resp.close()
@@ -149,7 +181,7 @@ class LivenessActivity : AppCompatActivity() {
                     }
 
                     // Lire le corps en mémoire (OkHttp décompresse gzip automatiquement)
-                    val body = resp.body ?: run { resp.close(); return null }
+                    val body  = resp.body ?: run { resp.close(); return null }
                     val bytes = body.bytes()
 
                     // Parser Content-Type → mimeType + charset
@@ -159,29 +191,24 @@ class LivenessActivity : AppCompatActivity() {
                     val charset = parts.firstOrNull { it.startsWith("charset=") }
                         ?.substringAfter("charset=")
 
-                    // Copier les headers de réponse (skip hop-by-hop + content-encoding déjà géré)
-                    val skipHeaders = setOf(
-                        "transfer-encoding", "connection", "keep-alive",
-                        "content-encoding"  // OkHttp a décompressé → plus valide
-                    )
+                    // Headers de réponse (skip hop-by-hop + content-encoding géré par OkHttp)
+                    val skipHeaders = setOf("transfer-encoding","connection","keep-alive","content-encoding")
                     val headers = linkedMapOf<String, String>()
                     resp.headers.toMultimap().forEach { (name, values) ->
                         if (name.lowercase() !in skipHeaders) headers[name] = values.last()
                     }
-                    // CORS obligatoire pour que Chromium accepte la réponse injectée
                     if (headers.keys.none { it.equals("access-control-allow-origin", ignoreCase = true) }) {
                         headers["Access-Control-Allow-Origin"] = "https://algeria.blsspainglobal.com"
                     }
 
                     CoroutineScope(Dispatchers.IO).launch {
                         github.sendTelegram(
-                            "🔀 Proxy ✅ `$shortUrl` (${resp.code}, ${bytes.size} bytes)"
+                            "✅ Proxy OK `$shortUrl`\n📦 ${bytes.size} bytes | X-Forwarded-For: ${data.ip}"
                         )
                     }
 
                     WebResourceResponse(
-                        mime,
-                        charset,
+                        mime, charset,
                         resp.code,
                         resp.message.ifEmpty { "OK" },
                         headers,
@@ -191,7 +218,7 @@ class LivenessActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     CoroutineScope(Dispatchers.IO).launch {
                         github.sendTelegram(
-                            "❌ Proxy erreur `$shortUrl`: ${e.message?.take(100)}"
+                            "❌ Proxy exception `$shortUrl`:\n${e.message?.take(120)}"
                         )
                     }
                     null  // fallback natif
@@ -379,7 +406,12 @@ class LivenessActivity : AppCompatActivity() {
 
             withContext(Dispatchers.IO) {
                 github.sendTelegram(
-                    "👁️ *Lien ouvert (Android)*\n📱 Client a ouvert l'app\n📁 `$filename`"
+                    "👁️ *Lien ouvert (Android)*\n" +
+                    "📁 `$filename`\n" +
+                    "👤 UID: `${data.userId.take(12)}`\n" +
+                    "🔑 TID: `${data.transactionId.take(12)}`\n" +
+                    "🌐 IP proxy: `${data.ip}`\n" +
+                    "🔧 UA: `${data.userAgent.take(50)}`"
                 )
             }
 
