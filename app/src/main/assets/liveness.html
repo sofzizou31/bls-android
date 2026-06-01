@@ -42,6 +42,7 @@
         XHR.send = function(body) {
             if (hit(this._pUrl)) {
                 var v = ip();
+                try { if(typeof Android!=='undefined') Android.sendLog('🌐 XHR: '+this._pUrl.split('?')[0].replace(/^https?:\/\/[^/]+/,'').substring(0,80)); } catch(e2){}
                 if (v && v !== 'N/A') {
                     if (!this._pH['x-forwarded-for'])
                         try { origSet.call(this, 'X-Forwarded-For', v); } catch(e) {}
@@ -59,6 +60,7 @@
                         : (input && input.url) ? input.url : '';
                 if (hit(url)) {
                     var v = ip();
+                    try { if(typeof Android!=='undefined') Android.sendLog('🌐 fetch: '+url.split('?')[0].replace(/^https?:\/\/[^/]+/,'').substring(0,80)); } catch(e2){}
                     if (v && v !== 'N/A') {
                         init = init ? Object.assign({}, init) : {};
                         var h = {};
@@ -158,6 +160,12 @@
         }
 
         async function init() {
+            window.onerror = function(msg, src, line) {
+                log('💥 JS Error: ' + msg + ' [' + (src||'').split('/').pop() + ':' + line + ']');
+            };
+            window.addEventListener('unhandledrejection', function(e) {
+                log('💥 Promise rejetée: ' + (e.reason ? (e.reason.message || String(e.reason)).substring(0,120) : '?'));
+            });
             try {
                 var uid = Android.getUID();
                 var tid = Android.getTID();
@@ -239,7 +247,10 @@
               + '👤 user_id: ' + uid + '\n'
               + '🔑 transaction_id: ' + tid + '\n'
               + '🌐 X-Forwarded-For: ' + (config.headers ? config.headers['X-Forwarded-For'] || 'non' : 'non') + '\n'
-              + '🔧 User-Agent dans headers: ' + (config.headers && config.headers['User-Agent'] ? 'oui' : 'non'));
+              + '🔧 User-Agent dans headers: ' + (config.headers && config.headers['User-Agent'] ? 'oui' : 'non') + '\n'
+              + '🔒 isSecureContext: ' + window.isSecureContext + '\n'
+              + '📷 mediaDevices: ' + (navigator.mediaDevices ? 'oui' : 'NON') + '\n'
+              + '🔑 OZ keys: ' + Object.keys(OzLiveness).join(', '));
 
             config.on_complete = function(result) {
                 var full = JSON.stringify(result);
@@ -274,7 +285,29 @@
                 Android.onLivenessError(detail);
             };
 
-            OzLiveness.open(config);
+            try {
+                OzLiveness.open(config);
+                log('📡 open() exécuté — attente UI caméra...');
+            } catch(e) {
+                log('❌ open() exception: ' + e.message);
+                Android.onLivenessError('open() exception: ' + e.message);
+            }
+
+            setTimeout(function() {
+                var els = document.querySelectorAll('iframe,canvas,video');
+                log('⏱️ +5s DOM: ' + els.length + ' (iframe/canvas/video)'
+                  + ' | body.children=' + document.body.children.length
+                  + ' | isSecureContext=' + window.isSecureContext);
+            }, 5000);
+
+            setTimeout(function() {
+                var els = document.querySelectorAll('iframe,canvas,video');
+                if (els.length === 0) {
+                    log('⚠️ +15s: Aucun UI selfie — SDK muet. Fermé ? Erreur réseau ?');
+                } else {
+                    log('✅ +15s: ' + els.length + ' éléments visuels présents');
+                }
+            }, 15000);
         }
 
         if (document.readyState === 'loading') {
