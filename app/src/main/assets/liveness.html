@@ -16,7 +16,10 @@
     (function() {
         var TARGETS = ['ozforensics.com', 'jscrambler.com'];
         function hit(url) {
-            return false; // Désactivé — headers injectés via shouldInterceptRequest (niveau réseau, pas CORS)
+            if (!url) return false;
+            for (var i = 0; i < TARGETS.length; i++)
+                if (url.indexOf(TARGETS[i]) !== -1) return true;
+            return false;
         }
         function ip() {
             try { return (typeof Android !== 'undefined') ? Android.getIP() : 'N/A'; }
@@ -37,7 +40,7 @@
             return origSet.apply(this, arguments);
         };
         XHR.send = function(body) {
-            if (hit(this._pUrl)) {
+            if (hit(this._pUrl) && !this.withCredentials) {
                 var v = ip();
                 try { if(typeof Android!=='undefined') Android.sendLog('🌐 XHR: '+this._pUrl.split('?')[0].replace(/^https?:\/\/[^/]+/,'').substring(0,80)); } catch(e2){}
                 if (v && v !== 'N/A') {
@@ -55,7 +58,7 @@
             window.fetch = function(input, init) {
                 var url = typeof input === 'string' ? input
                         : (input && input.url) ? input.url : '';
-                if (hit(url)) {
+                if (hit(url) && !(init && init.credentials === 'include')) {
                     var v = ip();
                     try { if(typeof Android!=='undefined') Android.sendLog('🌐 fetch: '+url.split('?')[0].replace(/^https?:\/\/[^/]+/,'').substring(0,80)); } catch(e2){}
                     if (v && v !== 'N/A') {

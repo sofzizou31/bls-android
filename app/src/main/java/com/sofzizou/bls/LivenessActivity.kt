@@ -86,9 +86,45 @@ class LivenessActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
 
-            // shouldInterceptRequest retiré : HttpURLConnection a un fingerprint TLS Java
-            // (≠ Chromium) → le CDN ozforensics détecte un bot et redirige vers http://
-            // (mixed content bloqué). Le WebView natif utilise le vrai fingerprint Chromium.
+            /**
+             * Log-only : on ne ré-fetch pas (évite le fingerprint TLS Java).
+             * Envoie sur Telegram les headers exacts de chaque requête vers ozforensics.com
+             * pour vérifier X-Forwarded-For, User-Agent, Referer.
+             */
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                val url = request.url.toString()
+                val isTarget = url.contains("ozforensics.com") || url.contains("jscrambler.com")
+                if (!isTarget) return null
+
+                val method  = request.method
+                val shortUrl = url.replace(Regex("^https?://[^/]+"), "").take(60)
+                val important = listOf("x-forwarded-for", "x-real-ip", "user-agent",
+                                       "referer", "origin", "content-type")
+                val allHeaders = request.requestHeaders
+                val summary = buildString {
+                    // Important headers first
+                    important.forEach { key ->
+                        allHeaders.entries.firstOrNull { it.key.lowercase() == key }
+                            ?.let { append("✅ ${it.key}: ${it.value.take(70)}\n") }
+                            ?: append("❌ $key: absent\n")
+                    }
+                    // Other headers
+                    allHeaders.entries
+                        .filter { it.key.lowercase() !in important }
+                        .filter { it.key.lowercase() !in listOf("cookie") }
+                        .forEach { append("  ${it.key}: ${it.value.take(60)}\n") }
+                }
+
+                CoroutineScope(Dispatchers.IO).launch {
+                    github.sendTelegram(
+                        "📡 *$method* `$shortUrl`\n```\n${summary.trimEnd()}\n```"
+                    )
+                }
+                return null  // WebView gère nativement (fingerprint Chromium)
+            }
 
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
                 Log.e("WebView", "Error ${err.errorCode}: ${err.description} @ ${req.url}")
