@@ -86,23 +86,6 @@ class LivenessActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
 
-            // ── Injection après chargement de la vraie page BLS (comme l'extension) ──
-            override fun onPageFinished(view: WebView, url: String) {
-                Log.d("WebView", "onPageFinished: $url")
-                val data = livenessData
-                if (!scriptInjected && url.contains("algeria.blsspainglobal.com") && data != null) {
-                    scriptInjected = true
-                    view.evaluateJavascript(buildInjectScript(data), null)
-                }
-            }
-
-            // NE PAS intercepter les requêtes OzForensics via OkHttp :
-            // OkHttp a un TLS fingerprint Java (non-Chrome) → OzForensics CDN détecte
-            // un bot et renvoie un contenu vide → OzLiveness jamais défini → timeout.
-            // Le WebView Chromium fait les requêtes nativement avec le bon fingerprint.
-            // UA = webView.settings.userAgentString (toutes requêtes).
-            // X-Forwarded-For = patch XHR/fetch dans buildInjectScript() (API calls POST).
-
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
                 Log.e("WebView", "Error ${err.errorCode}: ${err.description} @ ${req.url}")
             }
@@ -292,11 +275,10 @@ class LivenessActivity : AppCompatActivity() {
                 webView.settings.userAgentString = data.userAgent
             }
 
-            // Charge la VRAIE page BLS (même chose que l'extension Chrome)
-            // → vraie origine HTTPS algeria.blsspainglobal.com
-            // → getUserMedia() fonctionne dans un contexte sécurisé réel
-            scriptInjected = false
-            webView.loadUrl("https://algeria.blsspainglobal.com/assets/images/favicon.png")
+            val html = assets.open("liveness.html").bufferedReader().readText()
+            webView.loadDataWithBaseURL(
+                Constants.BLS_BASE_URL, html, "text/html", "UTF-8", null
+            )
         }
     }
 
